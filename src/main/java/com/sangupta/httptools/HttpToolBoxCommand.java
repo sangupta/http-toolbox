@@ -25,6 +25,7 @@ import io.airlift.command.Option;
 import io.airlift.command.OptionType;
 
 /**
+ * The global download command.
  * 
  * @author sangupta
  *

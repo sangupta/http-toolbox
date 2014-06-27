@@ -45,6 +45,7 @@ import com.sangupta.jerry.util.AssertUtils;
 import com.sangupta.jerry.util.GsonUtils;
 
 /**
+ * Download all URLs and persist them to disk.
  * 
  * @author sangupta
  *
@@ -69,8 +70,14 @@ public class DownloadUrlCommand extends HttpToolBoxCommand {
 	@Option(name = { "-o", "--output" }, description = "Output folder where individual files are written", required = true)
 	public String outputFolder;
 	
+	/**
+	 * The runnable tasks that we create before we fire threads for downloading
+	 */
 	private final List<Runnable> downloadTasks = new ArrayList<Runnable>();
 	
+	/**
+	 * The suffix for each filename that we write to disk
+	 */
 	private final String storeSuffix = "." + UUID.randomUUID().toString() + ".response";
 	
 	/**
@@ -78,7 +85,20 @@ public class DownloadUrlCommand extends HttpToolBoxCommand {
 	 */
 	private AtomicInteger count = new AtomicInteger();
 	
+	/**
+	 * The base directory where we need to write data
+	 */
 	private File outputDir;
+	
+	/**
+	 * Indicates if we need to split folders as number of files per folder will be huge
+	 */
+	private boolean splitFolders;
+	
+	/**
+	 * Total number of tasks that we have created
+	 */
+	private int numTasks;
 	
 	@Override
 	public void run() {
@@ -115,7 +135,7 @@ public class DownloadUrlCommand extends HttpToolBoxCommand {
 			while(iterator.hasNext()) {
 				++line;
 				String readURL = iterator.next();
-				downloadURL(readURL);
+				createURLTask(readURL);
 			}
 		} catch(IOException e) {
 			System.out.println("Unable to read URLs from the file at line: " + line);
@@ -131,6 +151,14 @@ public class DownloadUrlCommand extends HttpToolBoxCommand {
 			service.submit(runnable);
 		}
 		
+		// intialize some variables
+		this.numTasks = this.downloadTasks.size();
+		this.downloadTasks.clear();
+		
+		if(this.numTasks > 1000) {
+			this.splitFolders = true;
+		}
+		
 		// shutdown
 		shutdownAndAwaitTermination(service);
 		final long end = System.currentTimeMillis();
@@ -139,7 +167,14 @@ public class DownloadUrlCommand extends HttpToolBoxCommand {
 		System.out.println(this.downloadTasks.size() + " urls downloaded in " + (end - start) + " millis.");
 	}
 
-	private void downloadURL(String url) {
+	/**
+	 * Create a {@link Runnable} task for downloading and storage for the given
+	 * URL.
+	 * 
+	 * @param url
+	 *            the url to be downloaded
+	 */
+	private void createURLTask(String url) {
 		if(AssertUtils.isEmpty(url)) {
 			return;
 		}
@@ -163,9 +198,15 @@ public class DownloadUrlCommand extends HttpToolBoxCommand {
 		});
 	}
 
+	/**
+	 * Download the URL from web and then ask for storage.
+	 * 
+	 * @param url
+	 *            the URL to be downloaded
+	 */
 	private void downloadAndStoreURL(String url) {
 		int current = count.incrementAndGet();
-		System.out.println("Download " + current + "/" + this.downloadTasks.size() + " url: " + url + "...");
+		System.out.println("Download " + current + "/" + this.numTasks + " url: " + url + "...");
 		WebResponse response = WebInvoker.getResponse(url);
 		if(response == null) {
 			LOGGER.debug("Unable to fetch response for URL from server: {}", url);
@@ -180,15 +221,41 @@ public class DownloadUrlCommand extends HttpToolBoxCommand {
 		store(current, url, response);
 	}
 
+	/**
+	 * Store the downloaded web response to disk.
+	 * 
+	 * @param current
+	 *            the current index count
+	 * 
+	 * @param url
+	 *            the URL that was downloaded
+	 * 
+	 * @param response
+	 *            the response from the server
+	 */
 	private void store(int current, String url, WebResponse response) {
 		String json = GsonUtils.getGson().toJson(response);
 		try {
-			FileUtils.write(new File(this.outputDir, "url-" + current + this.storeSuffix), json);
+			if(this.splitFolders) {
+				int first = current % 16;
+				int second = (current / 16) % 16;
+				File folder = new File(this.outputDir.getAbsolutePath() + File.separator + first + File.separator + second);
+				folder.mkdirs();
+				FileUtils.write(new File(folder, "url-" + current + this.storeSuffix), json);
+			} else {
+				FileUtils.write(new File(this.outputDir, "url-" + current + this.storeSuffix), json);
+			}
 		} catch (IOException e) {
 			LOGGER.error("Unable to write web response from URL {} to disk: {}", url, json);
 		}
 	}
 
+	/**
+	 * Terminate the thread pool
+	 * 
+	 * @param pool
+	 *            the thread pool to terminate
+	 */
 	private void shutdownAndAwaitTermination(ExecutorService pool) {
 		pool.shutdown(); // Disable new tasks from being submitted
 		try {
